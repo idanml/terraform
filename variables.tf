@@ -28,3 +28,15 @@ variable CIDR {
   type        = string
   description = "address space"
 }
+
+variable admin_username {
+   type        = string
+}
+ 
+variable admin_password {
+   type        = string
+}
+
+variable VMsize {
+  type        = string
+}
