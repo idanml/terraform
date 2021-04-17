@@ -1,8 +1,10 @@
+#Resource group
 resource "azurerm_resource_group" "arg" {
   name     = var.RGN
   location = var.location
 }
 
+#Virtual network
 resource "azurerm_virtual_network" "vnet1" {
   name                = "vnet1"
   location            = var.location
@@ -10,6 +12,7 @@ resource "azurerm_virtual_network" "vnet1" {
   address_space       = [var.CIDR]
 }
 
+#Subnets
 resource "azurerm_subnet" "pbsb" {
   name                 = "Public"
   resource_group_name  = azurerm_resource_group.arg.name
@@ -24,6 +27,7 @@ resource "azurerm_subnet" "prsb" {
   address_prefixes     = ["10.0.3.0/24"]
 }
 
+#Network security groups
 resource "azurerm_network_security_group" "pbnsg" {
   name                = "Public-NSG"
   location            = var.location
@@ -134,6 +138,7 @@ resource "azurerm_subnet_network_security_group_association" "prsbNsg" {
   network_security_group_id = azurerm_network_security_group.prnsg.id
 }
 
+#Availability sets
 resource "azurerm_availability_set" "pbas" {
   name                = "PublicAS"
   location            = var.location
@@ -146,6 +151,7 @@ resource "azurerm_availability_set" "pras" {
   resource_group_name = azurerm_resource_group.arg.name
 }
 
+#2 windows VM
 module "PublicVM" {
 source                = "./modules/windowsvm"
    count                 = 2
@@ -173,6 +179,7 @@ source                = "./modules/windowsvm"
    disk_size_gb          = "127"
 }
 
+#2 linux VM
 module "PrivateVM" {
 source                = "./modules/linuxvm"
    count                 = 2
@@ -198,4 +205,111 @@ source                = "./modules/linuxvm"
    caching               = "ReadWrite"
    managed_disk_type     = "StandardSSD_LRS"
    disk_size_gb          = "127"
+}
+
+#Public Load balancer
+resource "azurerm_public_ip" "PBip" {
+  name                = "PublicIPForLB"
+  location            = var.location
+  resource_group_name = azurerm_resource_group.arg.name
+  allocation_method   = "Static"
+}
+
+resource "azurerm_lb" "PBlb" {
+  name                = "PublicLB"
+  location            = var.location
+  resource_group_name = azurerm_resource_group.arg.name
+
+  frontend_ip_configuration {
+    name                 = azurerm_public_ip.PBip.name
+    public_ip_address_id = azurerm_public_ip.PBip.id
+  }
+}
+
+resource "azurerm_lb_backend_address_pool" "BP1" {
+  loadbalancer_id = azurerm_lb.PBlb.id
+  name            = "BP1"
+}
+
+resource "azurerm_network_interface_backend_address_pool_association" "BP1AA" {
+  network_interface_id    = module.PublicVM.0.NIC_id
+  ip_configuration_name   = "ipConf0"
+  backend_address_pool_id = azurerm_lb_backend_address_pool.BP1.id
+}
+
+resource "azurerm_network_interface_backend_address_pool_association" "BP2AA" {
+  network_interface_id    = module.PublicVM.1.NIC_id
+  ip_configuration_name   = "ipConf1"
+  backend_address_pool_id = azurerm_lb_backend_address_pool.BP1.id
+}
+
+resource "azurerm_lb_probe" "HP1" {
+  resource_group_name = azurerm_resource_group.arg.name
+  loadbalancer_id     = azurerm_lb.PBlb.id
+  name                = "HP"
+  port                = 8080
+  protocol            = "Tcp"
+}
+
+resource "azurerm_lb_rule" "LB8080" {
+  resource_group_name            = azurerm_resource_group.arg.name
+  loadbalancer_id                = azurerm_lb.PBlb.id
+  name                           = "LB8080"
+  protocol                       = "Tcp"
+  frontend_port                  = 8080
+  backend_port                   = 8080
+  frontend_ip_configuration_name = azurerm_public_ip.PBip.name
+  backend_address_pool_id        = azurerm_lb_backend_address_pool.BP1.id
+  probe_id                       = azurerm_lb_probe.HP1.id
+}
+
+#Internal Load balancer
+resource "azurerm_lb" "PRlb" {
+  name                = "PrivateLB"
+  location            = var.location
+  resource_group_name = azurerm_resource_group.arg.name
+
+  frontend_ip_configuration {
+    name                 = "FrontIP"
+    subnet_id            = azurerm_subnet.prsb.id
+    private_ip_address   = "10.0.3.8"
+    private_ip_address_allocation = "Static"
+  }
+}
+
+resource "azurerm_lb_backend_address_pool" "BP2" {
+  loadbalancer_id = azurerm_lb.PRlb.id
+  name            = "BP1"
+}
+
+resource "azurerm_network_interface_backend_address_pool_association" "BP3AA" {
+  network_interface_id    = module.PrivateVM.0.NIC_id
+  ip_configuration_name   = "ipConf0"
+  backend_address_pool_id = azurerm_lb_backend_address_pool.BP2.id
+}
+
+resource "azurerm_network_interface_backend_address_pool_association" "BP4AA" {
+  network_interface_id    = module.PrivateVM.1.NIC_id
+  ip_configuration_name   = "ipConf1"
+  backend_address_pool_id = azurerm_lb_backend_address_pool.BP2.id
+}
+
+resource "azurerm_lb_probe" "HP2" {
+  resource_group_name = azurerm_resource_group.arg.name
+  loadbalancer_id     = azurerm_lb.PRlb.id
+  name                = "HP"
+  port                = 5432
+  protocol            = "Tcp"
+}
+
+resource "azurerm_lb_rule" "LB5432" {
+  resource_group_name            = azurerm_resource_group.arg.name
+  loadbalancer_id                = azurerm_lb.PRlb.id
+  name                           = "LB5432"
+  protocol                       = "Tcp"
+  frontend_port                  = 5432
+  backend_port                   = 5432
+  frontend_ip_configuration_name = "FrontIP"
+  backend_address_pool_id        = azurerm_lb_backend_address_pool.BP2.id
+  probe_id                       = azurerm_lb_probe.HP2.id
 }
